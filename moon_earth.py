@@ -2,22 +2,29 @@ import math
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
-
+from datetime import datetime, timedelta
 
 def quaternion_rotate_Sphere(points, q): #function to rotate celestial objects
-    q = np.array(q)
-    q_conj = np.array([-q[0], -q[1], -q[2], q[3]])
+    q = np.array(q, dtype=float)
+    q_conj = np.array([-q[0], -q[1], -q[2], q[3]], dtype=float)
     rotated = []
     for v in points:
-        v_q = np.array([v[0], v[1], v[2], 0])
+        v_q = np.array([v[0], v[1], v[2], 0.0], dtype=float)
         temp = quaternion_multiply(q, quaternion_multiply(v_q, q_conj))
         rotated.append(temp[:3])
-    return np.array(rotated)
+    return np.array(rotated, dtype=float)
 
-def quaternion_rotate_plane(x , y , q): #function to rotate orbits
-    q = np.array(q)
-    q_conj = np.array([-q[0], -q[1], -q[2], q[3]])
-    v_q = np.array([x, y, 0, 0])
+def quaternion_rotate_plane(x, y, q): #function to rotate orbits
+    q = np.array(q, dtype=float)
+    q_conj = np.array([-q[0], -q[1], -q[2], q[3]], dtype=float)
+    v_q = np.array([x, y, 0.0, 0.0], dtype=float)
+    rotated = quaternion_multiply(q, quaternion_multiply(v_q, q_conj))
+    return rotated[0], rotated[1], rotated[2]
+
+def quaternion_rotate_point(x,y,z,q):
+    q = np.array(q, dtype=float)
+    q_conj = np.array([-q[0], -q[1], -q[2], q[3]], dtype=float)
+    v_q = np.array([x, y, z, 0.0], dtype=float)
     rotated = quaternion_multiply(q, quaternion_multiply(v_q, q_conj))
     return rotated[0], rotated[1], rotated[2]
 
@@ -29,98 +36,81 @@ def quaternion_multiply(q1, q2): #quaternion multiplication
         w1*y2 - x1*z2 + y1*w2 + z1*x2,
         w1*z2 + x1*y2 - y1*x2 + z1*w2,
         w1*w2 - x1*x2 - y1*y2 - z1*z2
-    ])
+    ], dtype=float)
 
-def is_eclipse(x_earth, y_earth, x_moon, y_moon, z_moon, time, latitude, longtitude):
+def jd_to_datetime(JD):
+    """Convert Julian Date to a Python datetime in UTC."""
+    days = int(math.floor(JD - 2451545.0))
+    secs = (JD - 2451545.0 - days) * 86400.0
+    return datetime(2000,1,1,12,0,0) + timedelta(days=days, seconds=secs)
+
+def Calculate_visual_orbit_coordinates(t):
     
-    #Calculating sun coordinates
-    x_sun = E_earth * Semi_major_earth
-    y_sun = E_earth * (1 - E_earth)
-    z_sun = 0
+    phi = W_Earth * t
+    theta = W_Moon * t
     
-    longtitude_rotated = longtitude + (2 * math.pi / 86164) * time #taking into a count rotation of the Earth
+    #Earth cords with log scale (base 10)
+    x_earth_visual = np.log10(Semi_major_earth) * math.cos(phi)
+    y_earth_visual = np.log10(Semi_major_earth * math.sqrt(1.0 - E_earth**2)) * math.sin(phi)
     
-    #Calculating observer coordinates
-    x_observer =  R_earth * math.sin(latitude) * math.cos(longtitude_rotated)
-    y_observer =  R_earth * math.sin(latitude) * math.sin(longtitude_rotated)
-    z_observer =  R_earth * math.cos(latitude)
+    #Moon cords with log scale (base 10)
+    x_moon_visual = x_earth_visual + np.log10(Semi_major_moon) * math.cos(theta)
+    y_moon_visual = y_earth_visual + np.log10(Semi_major_moon * math.sqrt(1.0 - E_moon**2)) * math.sin(theta)
+
+    x_moon_visual, y_moon_visual, z_moon_visual = quaternion_rotate_plane(x_moon_visual, y_moon_visual, Quaternion_Moon) #Rotating moon cords for realistic orbit
     
-    rx, ry, rz = x_earth + x_observer, y_earth + y_observer, z_observer
-    S = np.array([x_sun - rx, y_sun - ry, z_sun - rz]) #Sun to observer distance
-    M = np.array([x_moon - rx, y_moon - ry, z_moon - rz]) #Moon to observer distance
+    return x_earth_visual, y_earth_visual, x_moon_visual, y_moon_visual, z_moon_visual
+
+def Calculate_real_orbits(t):
     
-    cos_theta = np.dot(S, M) / (np.linalg.norm(S) * np.linalg.norm(M)) 
-    theta = math.degrees(math.acos(np.clip(cos_theta, -1.0, 1.0))) #angular distance between moon and sun center 
+    phi = W_Earth * t
+    theta = W_Moon * t
+    
+    x_earth_real = Semi_major_earth * math.cos(phi)
+    y_earth_real = Semi_major_earth * math.sqrt(1.0 - E_earth**2) * math.sin(phi)
+      
+    x_moon_rel = Semi_major_moon * math.cos(theta)
+    y_moon_rel = Semi_major_moon * math.sqrt(1.0 - E_moon**2) * math.sin(theta)
+    z_moon_rel = 0.0
+    
+    #apply inclination of moon
+    x_moon_rel_rot, y_moon_rel_rot, z_moon_rel_rot = quaternion_rotate_point(
+        x_moon_rel, y_moon_rel, z_moon_rel, Quaternion_Moon
+    )
+    
+    #moon real position
+    x_moon_real = x_earth_real + x_moon_rel_rot
+    y_moon_real = y_earth_real + y_moon_rel_rot
+    z_moon_real = z_moon_rel_rot  # z_earth_real is 0
+    
+    return x_earth_real, y_earth_real, x_moon_real, y_moon_real, z_moon_real
+    
+    
+half_angle_Earth = 23.5/2.0 #angle of Earth relative to ecliptic plane
+half_angle_Moon = 5.145/2.0 #angle of orbit of moon relative to ecliptic plane
 
-    if abs(z_moon) < 0.5 and theta < 2.0: #Checking only when moon near sun and ecliptic plane
-        
-        d_se = math.hypot(x_earth - x_sun, y_earth - y_sun) #distance from sun to earth
-        d_me = math.sqrt((x_moon - x_earth)**2 + (y_moon - y_earth)**2 + z_moon**2) #distance from moon to earth
+Quaternion_Earth = [math.sin(math.radians(half_angle_Earth)), 0.0, 0.0, math.cos(math.radians(half_angle_Earth))] #quaternion for Earth rotation
+Quaternion_Moon = [math.sin(math.radians(half_angle_Moon)), 0.0, 0.0, math.cos(math.radians(half_angle_Moon))] #quaternion for moon orbit rotation
 
-        theta_sun = math.degrees(math.atan(R_sol / d_se)) #angular sun radius
-        theta_moon = math.degrees(math.atan(R_moon / d_me)) #angular moon radius
-        
-        if theta_moon >= theta_sun and theta < (theta_moon - theta_sun) * 1.5: #If moon seems larger than sun or equally and difference of radius bigger than distance between them, Total solar eclipse
-            return "Total"
-        elif theta < (theta_moon + theta_sun) * 1.5: #If distance smaller than the sum of radius of sun and moon (they intersecting), particular solar eclipse
-            return "Partial"
-
-    return None
-
-def time_to_date(t):
-    base_jd = 2461120.5
-    jd = base_jd + t / 86400
-    F, I = math.modf(jd)
-    I = int(I)
-    A = math.floor((I - 1867216.25) / 36524.25)
-    if I > 2299160:
-        B = I + 1 + A - math.floor(A / 4)
-    else:
-        B = I
-    C = B + 1524
-    D = math.floor((C - 122.1) / 365.25)
-    E = math.floor(365.25 * D)
-    G = math.floor((C - E) / 30.6001)
-    day = C - E + F - math.floor(30.6001 * G)
-    if G < 13.5:
-        month = G - 1
-    else:
-        month = G - 13
-    if month > 2.5:
-        year = D - 4716
-    else:
-        year = D - 4715
-    day_frac = day % 1
-    day = int(day)
-    hours = int(day_frac * 24)
-    minutes = int((day_frac * 24 - hours) * 60)
-    return f"{year}-{month:02d}-{day:02d} {hours:02d}:{minutes:02d}"
-
-half_angle_Earth = 23.5/2 #angle of Earth relative to ecliptic plane
-half_angle_Moon = 5.145/2 #angle of orbit of moon relative to ecliptic plane
-
-Quaternion_Earth = [math.sin(math.radians(half_angle_Earth)),0,0,math.cos(math.radians(half_angle_Earth))] #quaternion for Earth rotation
-Quaternion_Moon = [math.sin(math.radians(half_angle_Moon)),0,0,math.cos(math.radians(half_angle_Moon))] #quaternion for moon orbit rotation
-
-R_moon = math.log(1738, 4186)
-R_earth = math.log(6378.137, 4186)
-R_sol = math.log(695700, 4186)
+R_moon = 1738.0
+R_earth = 6378.137
+R_sun = 695700.0
 E_earth = 0.0167
 E_moon = 0.0549
-Semi_major_moon = math.log(3.844E5, 10)
-W_Earth = 1.99099E-7
-W_Moon = 2.66381E-6
-Semi_major_earth = math.log(149.598E6, 10)
+Semi_major_moon = 384400
+W_Earth = 1.72021536E-2
+W_Moon = 2.30153184E-1
+Semi_major_earth = 149.598E6
 
-dt = 86400
-t = 0
+dt = 0.01
+JD_end = 2462586.0
+JD_start = 2460939.5000000
+t = JD_start
 
 time_values = []
 
-lat = 24
-lon = 74
-
-eclipses = []
+latitude = math.radians(float(input("Enter observer latitude in degrees: ")))
+longitude = math.radians(float(input("Enter observer longitude in degrees: ")))
 
 #lists for earth coordinates
 Earth_X_cords = []
@@ -132,21 +122,22 @@ Moon_Y_cords = []
 Moon_Z_cords = []
 
 #angle 2D arrays for sphere point-by-point generation
-theta = np.linspace(0, np.pi, 10)
-phi = np.linspace(0, 2 * np.pi, 10)
+theta = np.linspace(0.0, np.pi, 10, dtype=float)
+phi = np.linspace(0.0, 2.0 * np.pi, 10, dtype=float)
 theta, phi = np.meshgrid(theta, phi)
 
-#earth sphere generation
-Earth_sphere_x = R_earth * np.sin(theta) * np.cos(phi)
-Earth_sphere_y = R_earth * np.sin(theta) * np.sin(phi)
-Earth_sphere_z = R_earth * np.cos(theta)
+#earth sphere generation with log scale (base 4186) for radius
+log_R_earth = np.log(R_earth) / np.log(4186.0)
+Earth_sphere_x = log_R_earth * np.sin(theta) * np.cos(phi)
+Earth_sphere_y = log_R_earth * np.sin(theta) * np.sin(phi)
+Earth_sphere_z = log_R_earth * np.cos(theta)
 
 #transform array to look like [[x,y,z],[x,y,z]] 
 earth_points = np.stack([
     Earth_sphere_x.flatten(),
     Earth_sphere_y.flatten(),
     Earth_sphere_z.flatten()
-], axis=1)
+], axis=1, dtype=float)
 
 #rotating every point by angle 23.5
 rotated_points = quaternion_rotate_Sphere(earth_points, Quaternion_Earth)
@@ -157,64 +148,154 @@ Earth_sphere_y = rotated_points[:, 1].reshape(Earth_sphere_y.shape)
 Earth_sphere_z = rotated_points[:, 2].reshape(Earth_sphere_z.shape)
 
 #Generate sun sphere with more realistic sun location relative to earth orbit 
-Sun_sphere_x = E_earth * Semi_major_earth +  R_sol * np.sin(theta) * np.cos(phi)
-Sun_sphere_y = E_earth * (1-E_earth) + R_sol * np.sin(theta) * np.sin(phi)
-Sun_sphere_z = R_sol * np.cos(theta)
+log_R_sun = np.log(R_sun) / np.log(4186.0)
+Sun_sphere_x = log_R_sun * np.sin(theta) * np.cos(phi)
+Sun_sphere_y = log_R_sun * np.sin(theta) * np.sin(phi)
+Sun_sphere_z = log_R_sun * np.cos(theta)
 
-#Generate moon sphere
-Moon_sphere_x = R_moon * np.sin(theta) * np.cos(phi)
-Moon_sphere_y = R_moon * np.sin(theta) * np.sin(phi)
-Moon_sphere_z = R_moon * np.cos(theta)
+#Generate moon sphere with log scale (base 4186) for radius
+log_R_moon = np.log(R_moon) / np.log(4186.0)
+Moon_sphere_x = log_R_moon * np.sin(theta) * np.cos(phi)
+Moon_sphere_y = log_R_moon * np.sin(theta) * np.sin(phi)
+Moon_sphere_z = log_R_moon * np.cos(theta)
 
-#Calculating orbits for Earth and Moon relative to time passed 
-while t<(dt*365*5):
+prev_align = False
+events = []
+#Calculating orbits, checking for eclipses
+while t < JD_end:
     
+    x_ev, y_ev, x_mv, y_mv, z_mv = Calculate_visual_orbit_coordinates(t)
+    
+    x_er, y_er, x_mr, y_mr, z_mr = Calculate_real_orbits(t)
+    Earth_X_cords.append(x_ev)
+    Earth_Y_cords.append(y_ev)
+    
+    Moon_X_cords.append(x_mv)
+    Moon_Y_cords.append(y_mv)
+    Moon_Z_cords.append(z_mv)
+    
+    #Eclipse section
+    x_sr = E_earth * Semi_major_earth #x_sun_real
+    y_sr = E_earth * (1.0 - E_earth) #y_sun_real
+    z_sr = 0.0
+    
+    #taking into account rotation of the Earth
+    longitude_rotated = longitude + (2.0 * math.pi) * t
+    
+    x_ow = R_earth * math.cos(latitude) * math.cos(longitude_rotated)
+    y_ow = R_earth * math.cos(latitude) * math.sin(longitude_rotated)
+    z_ow = R_earth * math.sin(latitude)
+    
+    #rotate observer location with quaternion by 23.5 deg
+    x_ow, y_ow, z_ow = quaternion_rotate_point(x_ow, y_ow, z_ow, Quaternion_Earth)
+    
+    #Observer cords
+    x_o =  x_er + x_ow
+    y_o =  y_er + y_ow
+    z_o =  z_ow
+    
+    #Observer to objects vector
+    o_s = [x_sr - x_o, y_sr - y_o, -z_o] #observer_sun
+    o_m = [x_mr - x_o, y_mr - y_o, z_mr - z_o] #observer_moon
+    #Distance of vectors between observer, sun and moon
+    dos = math.sqrt(o_s[0]**2 + o_s[1]**2 + o_s[2]**2)
+    dom = math.sqrt(o_m[0]**2 + o_m[1]**2 + o_m[2]**2)
+    
+    dot = o_s[0]*o_m[0] + o_s[1]*o_m[1] + o_s[2]*o_m[2]
+    sep = math.degrees(math.acos(max(min(dot/(dos*dom), 1.0), -1.0)))
+    
+    #Angular radius of Sun and Moon
+    alpha_s = math.degrees(math.asin(R_sun / dos))
+    alpha_m = math.degrees(math.asin(R_moon / dom))
+    
+    #Correction for Earth radius
+    align = (sep <= (alpha_s + alpha_m))
+    if align and not prev_align:
+        
+        #Refine around eclipse
+        t0 = max(t - dt, JD_start)
+        t1 = min(t + dt, JD_end)
+        min_sep = sep
+        min_t = t
+        
+        for i in range(1001):
+            
+            t_f = t0 + (t1 - t0) * i / 1000.0
+            
+            x_erf, y_erf, x_mrf, y_mrf, z_mrf = Calculate_real_orbits(t_f)
+            
+            longitude_rotated_f = longitude + (2.0 * math.pi) * t_f
+            x_owf = R_earth * math.cos(latitude) * math.cos(longitude_rotated_f)
+            y_owf = R_earth * math.cos(latitude) * math.sin(longitude_rotated_f)
+            z_owf = R_earth * math.sin(latitude)
+            
+            x_owf, y_owf, z_owf = quaternion_rotate_point(x_owf, y_owf, z_owf, Quaternion_Earth)
+            
+            x_of =  x_erf + x_owf
+            y_of =  y_erf + y_owf
+            z_of =  z_owf
+            
+            o_sf = [x_sr - x_of, y_sr - y_of, -z_of]
+            o_mf = [x_mrf - x_of, y_mrf - y_of, z_mrf - z_of]
+            
+            dos_f = math.sqrt(o_sf[0]**2 + o_sf[1]**2 + o_sf[2]**2)
+            dom_f = math.sqrt(o_mf[0]**2 + o_mf[1]**2 + o_mf[2]**2)
+            
+            dot_f = o_sf[0]*o_mf[0] + o_sf[1]*o_mf[1] + o_sf[2]*o_mf[2]
+            sep_f = math.degrees(math.acos(max(min(dot_f/(dos_f*dom_f), 1.0), -1.0)))
+            
+            if sep_f < min_sep:
+                min_sep = sep_f
+                min_t = t_f
+                
+        # classify eclipse at min_t
+        
+        x_erf, y_erf, x_mrf, y_mrf, z_mrf = Calculate_real_orbits(min_t)
+        
+        longitude_rotated_f = longitude + (2.0 * math.pi) * min_t
+        
+        x_owf = R_earth * math.cos(latitude) * math.cos(longitude_rotated_f)
+        y_owf = R_earth * math.cos(latitude) * math.sin(longitude_rotated_f)
+        z_owf = R_earth * math.sin(latitude)
+        
+        x_owf, y_owf, z_owf = quaternion_rotate_point(x_owf, y_owf, z_owf, Quaternion_Earth)
+        
+        x_of =  x_erf + x_owf
+        y_of =  y_erf + y_owf
+        z_of =  z_owf
+        
+        o_sf = [x_sr - x_of, y_sr - y_of, -z_of]
+        o_mf = [x_mrf - x_of, y_mrf - y_of, z_mrf - z_of]
+        
+        dos_f = math.sqrt(o_sf[0]**2 + o_sf[1]**2 + o_sf[2]**2)
+        dom_f = math.sqrt(o_mf[0]**2 + o_mf[1]**2 + o_mf[2]**2)
+        
+        dot_f = o_sf[0]*o_mf[0] + o_sf[1]*o_mf[1] + o_sf[2]*o_mf[2]
+        sep_f = math.degrees(math.acos(max(min(dot_f/(dos_f*dom_f), 1.0), -1.0)))
+       
+        alpha_s_f = math.degrees(math.asin(R_sun / dos_f))
+        alpha_m_f = math.degrees(math.asin(R_moon / dom_f))
+        # distance from Earth's center to line (Sun-Moon)
+        cross_x = o_sf[1]*o_mf[2] - o_sf[2]*o_mf[1]
+        cross_y = o_sf[2]*o_mf[0] - o_sf[0]*o_mf[2]
+        cross_z = o_sf[0]*o_mf[1] - o_sf[1]*o_mf[0]
+        dist_line = math.sqrt(cross_x**2 + cross_y**2 + cross_z**2) / \
+                    math.sqrt((o_mf[0]-o_sf[0])**2 + (o_mf[1]-o_sf[1])**2 + (o_mf[2]-o_sf[2])**2)
+                    
+        if dist_line <= R_earth and alpha_m_f >= alpha_s_f:
+            typ = "Total"
+        else:
+            typ = "Partial"
+            
+        events.append((min_t-22, typ))
+    prev_align = align
     t += dt
     time_values.append(t)
     
-    phi = W_Earth * t
-    theta = W_Moon * t
-    
-    #Earth cords
-    x = Semi_major_earth*math.cos(phi)
-    y = Semi_major_earth*math.sqrt(1-E_earth**2)*math.sin(phi)
-    
-    #Moon cords
-    x_moon = x + Semi_major_moon*math.cos(theta)
-    y_moon = y + Semi_major_moon*math.sqrt(1-E_moon**2)*math.sin(theta)
-    
-    
-    x_moon, y_moon, z_moon = quaternion_rotate_plane(x_moon, y_moon, Quaternion_Moon) #Rotating moon cords for realistic orbit
-    
-    Earth_X_cords.append(x)
-    Earth_Y_cords.append(y)
-    
-    Moon_X_cords.append(x_moon)
-    Moon_Y_cords.append(y_moon)
-    Moon_Z_cords.append(z_moon)
-    
-    #When near ascending or descending node, cheking more carefully
-    if abs(math.sin(theta)) < 0.1:
-        
-        for t_fine in np.arange(t - 43200, t + 43200, 3600):
-            
-            phi_f = W_Earth * t_fine
-            theta_f = W_Moon * t_fine
-            
-            x_f = Semi_major_earth * math.cos(phi_f)
-            y_f = Semi_major_earth * math.sqrt(1 - E_earth**2) * math.sin(phi_f)
-            
-            x_mf = x_f + Semi_major_moon * math.cos(theta_f)
-            y_mf = y_f + Semi_major_moon * math.sqrt(1 - E_moon**2) * math.sin(theta_f)
-            x_mf, y_mf, z_mf = quaternion_rotate_plane(x_mf, y_mf, Quaternion_Moon)
-            
-            eclipse_type = is_eclipse(x_f, y_f, x_mf, y_mf, z_mf, t_fine, lat, lon)
-            
-            if eclipse_type:
-                
-                eclipses.append((t_fine, eclipse_type))
-                t += 86400
-                break
+ 
+for (jd_event, etype) in events:
+    t = jd_to_datetime(jd_event)
+    print(t.strftime("%Y-%m-%d %H:%M UTC"), etype, "Eclipse")
 
 fig = plt.figure(figsize=(10, 10))
 ax = fig.add_subplot(111, projection='3d')
@@ -228,7 +309,8 @@ Earth_surface = ax.plot_surface(Earth_sphere_x, Earth_sphere_y, Earth_sphere_z, 
 Sun_surface = ax.plot_surface(Sun_sphere_x, Sun_sphere_y, Sun_sphere_z, color='yellow', alpha=1)
 Moon_surface = ax.plot_surface(Moon_sphere_x, Moon_sphere_y, Moon_sphere_z, color='gray', alpha=1)
 
-ax.set(xlim = [-10,10], ylim = [-10,10], zlim = [-8,8], xlabel='x', ylabel='y', zlabel='z')
+#Set logarithmic axis limits
+ax.set(xlim=[-10, 10], ylim=[-10, 10], zlim=[-8, 8], xlabel='log10(x)', ylabel='log10(y)', zlabel='log10(z)')
 time_text = ax.text(10, 10, 5, '', fontsize=15)
 ax.grid(True)
 ax.legend()
@@ -239,17 +321,16 @@ def update(frame):
     current_x = Earth_X_cords[frame]
     current_y = Earth_Y_cords[frame]
     
-        
     current_x_moon = Moon_X_cords[frame] 
     current_y_moon = Moon_Y_cords[frame]
     current_z_moon = Moon_Z_cords[frame]
     
     
-    time_text.set_text(f"t = {time_values[frame]/86400} days")
+    time_text.set_text(f"t = {time_values[frame]} days")
     
     #Orbit line behind Earth
     line.set_data(Earth_X_cords[:frame+1], Earth_Y_cords[:frame+1])
-    line.set_3d_properties([0] * (frame+1))
+    line.set_3d_properties([0.0] * (frame+1))
     
     #Orbit line behind Moon
     line2.set_data(Moon_X_cords[:frame+1], Moon_Y_cords[:frame+1])
@@ -257,23 +338,13 @@ def update(frame):
     
     #Deleting Earth sphere in old coordinates and drawing new
     Earth_surface.remove()
-    Earth_surface = ax.plot_surface(Earth_sphere_x + current_x,Earth_sphere_y + current_y,Earth_sphere_z, color='green', alpha=1)
+    Earth_surface = ax.plot_surface(Earth_sphere_x + current_x, Earth_sphere_y + current_y, Earth_sphere_z, color='green', alpha=1)
     
     #Same with Moon
     Moon_surface.remove()
-    Moon_surface = ax.plot_surface(Moon_sphere_x + current_x_moon,Moon_sphere_y + current_y_moon,Moon_sphere_z + current_z_moon, color='gray', alpha=1)
+    Moon_surface = ax.plot_surface(Moon_sphere_x + current_x_moon, Moon_sphere_y + current_y_moon, Moon_sphere_z + current_z_moon, color='gray', alpha=1)
     
     return line, line2, Earth_surface, Moon_surface, time_text
 
-print("Predicted Solar Eclipses:")
-for t_e, et in eclipses:
-    print(f"{time_to_date(t_e)}: {et} Eclipse")
-
 ani = animation.FuncAnimation(fig=fig, func=update, frames=len(time_values), interval=10, blit=False)
 plt.show()
-
-
-
-
-
-
